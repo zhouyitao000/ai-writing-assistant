@@ -51,7 +51,8 @@ export default function Home() {
   const [isChatEditing, setIsChatEditing] = useState(false);
 
   // -- API Integration --
-  // Use environment variable for API URL, fallback to relative path for local development
+  // On Vercel, relative paths /api/... will be rewritten to the backend.
+  // On Zeabur (or split deployment), we use NEXT_PUBLIC_API_URL.
   const API_URL = process.env.NEXT_PUBLIC_API_URL || ""; 
 
 
