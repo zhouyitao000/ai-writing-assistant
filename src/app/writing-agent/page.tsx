@@ -6,65 +6,198 @@ import LeftSidebar from "./components/LeftSidebar";
 import RightSidebar from "./components/RightSidebar";
 import CenterEditor from "./components/CenterEditor";
 
-export default function WritingAgentPage() {
-  const [editorContent, setEditorContent] = useState("");
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
+import { Message } from "./components/RightSidebar";
 
-  const handleNewDocument = () => {
-    if (confirm("Create new document? Unsaved changes will be lost.")) {
-      setEditorContent("");
-    }
+interface Document {
+  id: string;
+  title: string;
+  content: string;
+  date: string;
+}
+
+export default function WritingAgentPage() {
+  // -- State --
+  const [documents, setDocuments] = useState<Document[]>([
+    { id: "1", title: "The Impact of AI on Education", content: "AI is transforming education...", date: "Today" },
+    { id: "2", title: "Reflection on Modern Art", content: "Modern art challenges our perceptions...", date: "Yesterday" },
+  ]);
+  const [currentDocId, setCurrentDocId] = useState<string>("1");
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
+  const [chats, setChats] = useState<{ [docId: string]: Message[] }>({});
+
+  // Derived state
+  const currentDoc = documents.find(d => d.id === currentDocId) || documents[0];
+  const currentMessages = chats[currentDocId] || [];
+
+  // Handlers
+  const handleUpdateMessages = (newMessages: Message[]) => {
+     setChats(prev => ({
+        ...prev,
+        [currentDocId]: newMessages
+     }));
+  };
+  
+  // Undo/Redo Stacks (Simple implementation for current doc)
+  const [history, setHistory] = useState<{ [docId: string]: string[] }>({});
+  const [future, setFuture] = useState<{ [docId: string]: string[] }>({});
+
+  // Helper to save history before change
+  const saveToHistory = (docId: string, content: string) => {
+     setHistory(prev => ({
+        ...prev,
+        [docId]: [...(prev[docId] || []), content].slice(-20) // Limit stack size
+     }));
+     setFuture(prev => ({ ...prev, [docId]: [] })); // Clear redo stack on new change
   };
 
+  const handleUpdateContent = (newContent: string, saveHistory = true) => {
+    if (saveHistory && currentDoc.content !== newContent) {
+       saveToHistory(currentDocId, currentDoc.content);
+    }
+    setDocuments(prev => prev.map(doc => 
+      doc.id === currentDocId ? { ...doc, content: newContent } : doc
+    ));
+  };
+  
+  const handleUndo = () => {
+     const docHistory = history[currentDocId] || [];
+     if (docHistory.length === 0) return;
+     
+     const previous = docHistory[docHistory.length - 1];
+     const newHistory = docHistory.slice(0, -1);
+     
+     setFuture(prev => ({
+        ...prev,
+        [currentDocId]: [currentDoc.content, ...(prev[currentDocId] || [])]
+     }));
+     setHistory(prev => ({ ...prev, [currentDocId]: newHistory }));
+     
+     // Update doc without saving to history again
+     setDocuments(prev => prev.map(doc => 
+       doc.id === currentDocId ? { ...doc, content: previous } : doc
+     ));
+  };
+
+  const handleRedo = () => {
+     const docFuture = future[currentDocId] || [];
+     if (docFuture.length === 0) return;
+     
+     const next = docFuture[0];
+     const newFuture = docFuture.slice(1);
+     
+     setHistory(prev => ({
+        ...prev,
+        [currentDocId]: [...(prev[currentDocId] || []), currentDoc.content]
+     }));
+     setFuture(prev => ({ ...prev, [currentDocId]: newFuture }));
+     
+     setDocuments(prev => prev.map(doc => 
+       doc.id === currentDocId ? { ...doc, content: next } : doc
+     ));
+  };
+  
+  const handleNewDocument = () => {
+    const newDoc: Document = {
+      id: Date.now().toString(),
+      title: "Untitled Document",
+      content: "",
+      date: "Just now"
+    };
+    setDocuments(prev => [newDoc, ...prev]);
+    setCurrentDocId(newDoc.id);
+  };
+
+  const handleSelectDocument = (id: string) => {
+    setCurrentDocId(id);
+  };
+  
   const handleInsertContent = (text: string) => {
-    setEditorContent((prev) => {
-      const separator = prev ? "\n\n" : "";
-      return prev + separator + text;
-    });
+    setDocuments(prev => prev.map(doc => 
+      doc.id === currentDocId ? { ...doc, content: doc.content ? doc.content + "\n\n" + text : text } : doc
+    ));
+  };
+
+  const handleStreamContent = (chunk: string) => {
+    // For streaming, we don't save history on every chunk, maybe only start? 
+    // Simplified: Just update. Real app would batch.
+    
+    // Check if we have an insertion point (from metadata hack or state)
+    // Since we don't have global state for cursor, we'll assume append for now unless we parse the chunk?
+    // Actually, `handleInsertContent` handles the logic. 
+    // Wait, `RightSidebar` calls `onStreamContent`.
+    
+    setDocuments(prev => prev.map(doc => 
+      doc.id === currentDocId ? { ...doc, content: doc.content + chunk } : doc
+    ));
+    
+    // Auto-scroll logic is handled in CenterEditor or here?
+    // CenterEditor's textarea has `overflow-y-auto`. We need to scroll IT.
+    // We can dispatch an event "content-scroll"
+    window.dispatchEvent(new Event("content-scroll-bottom"));
+  };
+  
+  const handleDeleteDocument = () => {
+     if (documents.length <= 1) {
+        alert("Cannot delete the last document.");
+        return;
+     }
+     if (confirm("Are you sure you want to delete this document?")) {
+        const newDocs = documents.filter(d => d.id !== currentDocId);
+        setDocuments(newDocs);
+        setCurrentDocId(newDocs[0].id);
+     }
   };
 
   const handleAIRequest = (prompt?: string) => {
     setIsRightSidebarOpen(true);
-    // This function will be passed to RightSidebar via a ref or context in a real app.
-    // For now, we need to signal RightSidebar to handle this prompt.
-    // Since we don't have a global store, we can use a simple event bus or prop.
     if (prompt) {
-       // Dispatch a custom event that RightSidebar listens to
        const event = new CustomEvent("ai-prompt-request", { detail: { prompt } });
        window.dispatchEvent(event);
     }
   };
 
+  // Helper to trigger quote in RightSidebar
+  const handleAskAI = (selectedText: string) => {
+    setIsRightSidebarOpen(true);
+    // Dispatch event to RightSidebar
+    const event = new CustomEvent("ai-quote-request", { detail: { text: selectedText } });
+    window.dispatchEvent(event);
+  };
+
   return (
     <div className="h-screen bg-[#0c0d0e] text-white font-sans overflow-hidden flex flex-col">
-      {/* Background Effects */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-purple-900/10 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-indigo-900/10 rounded-full blur-[120px]" />
-      </div>
-
       <Navigation />
 
       {/* Main Workspace (Below Nav) */}
       <div className="flex-1 flex pt-24 overflow-hidden relative z-10">
         
         {/* 1. Left Sidebar: Document Management */}
-        <LeftSidebar onNewDocument={handleNewDocument} />
+        <LeftSidebar 
+          documents={documents}
+          currentDocId={currentDocId}
+          onNewDocument={handleNewDocument} 
+          onSelectDocument={handleSelectDocument}
+        />
 
         {/* 2. Center Stage: Editor */}
         <CenterEditor 
-          content={editorContent} 
-          onChange={setEditorContent}
+          content={currentDoc?.content || ""} 
+          onChange={handleUpdateContent}
           onAIRequest={handleAIRequest}
+          onAskAI={handleAskAI}
+          onDeleteDocument={handleDeleteDocument}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
         />
 
         {/* 3. Right Sidebar: AI Copilot */}
         <RightSidebar 
           isOpen={isRightSidebarOpen} 
           onInsertContent={handleInsertContent}
-          onStreamContent={(chunk) => setEditorContent(prev => prev + chunk)}
+          onStreamContent={handleStreamContent}
+          messages={currentMessages}
+          onMessagesChange={handleUpdateMessages}
         />
-
       </div>
     </div>
   );

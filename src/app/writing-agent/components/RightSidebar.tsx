@@ -9,33 +9,49 @@ import {
   CheckCircle2, 
   Settings2,
   ChevronDown,
-  ArrowRight
+  ArrowRight,
+  Quote
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface RightSidebarProps {
-  onInsertContent: (content: string) => void;
-  isOpen: boolean;
-  onStreamContent?: (chunk: string) => void;
-}
-
-interface Message {
+export interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
-  type?: "text" | "card" | "confirmation";
+  type?: "text" | "card" | "confirmation" | "quote";
   cardData?: {
     title: string;
     content: string;
   };
 }
 
-export default function RightSidebar({ onInsertContent, isOpen, onStreamContent }: RightSidebarProps) {
+interface RightSidebarProps {
+  onInsertContent: (content: string) => void;
+  isOpen: boolean;
+  onStreamContent?: (chunk: string) => void;
+  messages: Message[];
+  onMessagesChange: (messages: Message[]) => void;
+}
+
+export default function RightSidebar({ onInsertContent, isOpen, onStreamContent, messages, onMessagesChange }: RightSidebarProps) {
   // -- State --
-  const [messages, setMessages] = useState<Message[]>([]);
+  // messages state is now lifted up
   const [inputMessage, setInputMessage] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState<string | null>(null); // New state for quote context
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  // Ref to track latest messages for event handlers without re-binding
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+     messagesRef.current = messages;
+  }, [messages]);
+  
+  // Ref to track latest props to avoid re-binding listeners on every render
+  const callbacksRef = useRef({ onMessagesChange, onStreamContent });
+  useEffect(() => {
+     callbacksRef.current = { onMessagesChange, onStreamContent };
+  }, [onMessagesChange, onStreamContent]);
 
   // Config State
   const [step, setStep] = useState<"config" | "chat">("config");
@@ -56,12 +72,91 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
       const prompt = e.detail?.prompt;
       if (prompt) {
         if (step === "config") setStep("chat");
-        // Trigger direct generation flow
-        handleDirectGeneration(prompt);
+        // Trigger direct generation flow using ref to get latest messages
+        // We define the logic here or call a stable handler. 
+        // To be safe, let's inline the logic or use a ref-based handler to ensure we access latest props/state.
+        executeDirectGeneration(prompt);
       }
     };
     window.addEventListener("ai-prompt-request", handleExternalPrompt);
     return () => window.removeEventListener("ai-prompt-request", handleExternalPrompt);
+  }, [step, persona, tone]); // Add persona/tone so we get their latest values
+
+  // Core Generation Logic (Ref-safe)
+  const executeDirectGeneration = async (prompt: string) => {
+     // 1. Add User Prompt
+     const userMsg: Message = {
+        id: generateId(),
+        role: "user",
+        content: prompt,
+     };
+     
+     // Use ref to get latest messages
+     let newMessages = [...messagesRef.current, userMsg];
+     callbacksRef.current.onMessagesChange(newMessages);
+     
+     setIsStreaming(true);
+
+     // 2. Add "Generating..." message
+     const generatingMsg: Message = {
+        id: generateId(),
+        role: "assistant",
+        content: "Generating content directly to the editor..."
+     };
+     newMessages = [...newMessages, generatingMsg];
+     callbacksRef.current.onMessagesChange(newMessages);
+
+     // 3. Stream content to Editor (Virtual)
+     const fullText = `[Direct Generation for "${prompt}"]\n\nThis content is being streamed directly to your document editor. It reflects the ${persona} persona and ${tone} tone you selected.`;
+     const chunks = fullText.split(" ");
+     
+     for (let i = 0; i < chunks.length; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        callbacksRef.current.onStreamContent?.((i === 0 ? "\n\n" : " ") + chunks[i]);
+     }
+
+     setIsStreaming(false);
+     
+     // 4. Show Completion Message
+     const completeMsg: Message = {
+        id: generateId(),
+        role: "assistant",
+        content: "✅ Content has been added to your document."
+     };
+     
+     // Remove "Generating..." and add Complete
+     // Need to fetch latest messages again? No, we are in async flow, but messages might have changed if user typed?
+     // For safety, let's filter from messagesRef.current again?
+     // But messagesRef.current might include new user messages.
+     // Let's just filter the generatingMsg from the *current* ref state.
+     
+     const currentMsgs = messagesRef.current;
+     const filtered = currentMsgs.filter(m => m.id !== generatingMsg.id);
+     callbacksRef.current.onMessagesChange([...filtered, completeMsg]);
+  };
+
+  // Listen for quote requests
+  useEffect(() => {
+    const handleQuoteRequest = (e: any) => {
+      const selectedText = e.detail?.text;
+      if (selectedText) {
+        if (step === "config") setStep("chat");
+        setPendingQuote(selectedText);
+      }
+    };
+    
+    // NEW: Listen for clear quote event
+    const handleClearQuote = () => {
+       setPendingQuote(null);
+    };
+
+    window.addEventListener("ai-quote-request", handleQuoteRequest);
+    window.addEventListener("ai-quote-clear", handleClearQuote);
+    
+    return () => {
+       window.removeEventListener("ai-quote-request", handleQuoteRequest);
+       window.removeEventListener("ai-quote-clear", handleClearQuote);
+    };
   }, [step]);
 
   // -- Handlers --
@@ -75,7 +170,7 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
       role: "assistant",
       content: `I'm set to act as a **${persona}** student with a **${tone}** tone. What would you like to write today? You can ask me to generate an outline, a paragraph, or a full essay.`
     };
-    setMessages([initialMsg]);
+    onMessagesChange([initialMsg]);
   };
 
   const handleDirectGeneration = async (prompt: string) => {
@@ -85,23 +180,25 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
         role: "user",
         content: prompt,
      };
-     setMessages((prev) => [...prev, userMsg]);
+     
+     // Use ref to get latest messages since we are in an event handler
+     let newMessages = [...messagesRef.current, userMsg];
+     onMessagesChange(newMessages);
+     
      setIsStreaming(true);
 
      // 2. Add "Generating..." message
-     setMessages((prev) => [...prev, {
+     const generatingMsg: Message = {
         id: generateId(),
         role: "assistant",
         content: "Generating content directly to the editor..."
-     }]);
+     };
+     newMessages = [...newMessages, generatingMsg];
+     onMessagesChange(newMessages);
 
      // 3. Stream content to Editor (Virtual)
      const fullText = `[Direct Generation for "${prompt}"]\n\nThis content is being streamed directly to your document editor. It reflects the ${persona} persona and ${tone} tone you selected.`;
      const chunks = fullText.split(" ");
-     
-     // Store for potential rollback (simple undo not implemented here, but we confirm at end)
-     // Actually requirement says: stream first, then confirm. If reject -> undo.
-     // For simplicity, we just append now. Undo logic would require editor state management.
      
      for (let i = 0; i < chunks.length; i++) {
         await new Promise(r => setTimeout(r, 50));
@@ -110,18 +207,17 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
 
      setIsStreaming(false);
      
-     // 4. Ask for Confirmation
-     const confirmMsg: Message = {
+     // 4. Show Completion Message (No Confirmation Card)
+     const completeMsg: Message = {
         id: generateId(),
         role: "assistant",
-        content: "I've finished writing. Are you happy with this addition?",
-        type: "confirmation",
-        cardData: {
-           title: "Generation Complete",
-           content: "Content has been added to the editor. Click Confirm to keep it, or Reject to undo (simulated)."
-        }
+        content: "✅ Content has been added to your document."
      };
-     setMessages(prev => [...prev, confirmMsg]);
+     
+     // Remove "Generating..." and add Complete
+     newMessages = newMessages.filter(m => m.id !== generatingMsg.id);
+     newMessages.push(completeMsg);
+     onMessagesChange(newMessages);
   };
 
   const handleSendMessage = async (text: string = inputMessage) => {
@@ -130,24 +226,33 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
     // Switch to Chat if in Config
     if (step === "config") setStep("chat");
 
-    // 1. Add User Message
+    // 1. Add User Message (Combine with quote if present)
+    const finalContent = pendingQuote ? `> ${pendingQuote}\n\n${text}` : text;
+    
     const userMsg: Message = {
       id: generateId(),
       role: "user",
-      content: text,
+      content: finalContent,
     };
-    setMessages((prev) => [...prev, userMsg]);
+    
+    // Use ref to get latest messages
+    let newMessages = [...messagesRef.current, userMsg];
+    onMessagesChange(newMessages);
+    
     setInputMessage("");
+    setPendingQuote(null); // Clear quote
     setIsStreaming(true);
 
     // 2. Direct Streaming to Editor (Skip Chat Card)
     // Add "Generating..." indicator in chat
     const thinkingMsgId = generateId();
-    setMessages((prev) => [...prev, {
+    const thinkingMsg: Message = {
        id: thinkingMsgId,
        role: "assistant",
        content: "Generating content directly to the editor..."
-    }]);
+    };
+    newMessages = [...newMessages, thinkingMsg];
+    onMessagesChange(newMessages);
 
     // 3. Stream content to Editor (Virtual)
     const fullText = `\n\nThis content is being streamed directly to your document editor based on your request. It reflects the ${persona} persona and ${tone} tone you selected. The arguments are structured to be persuasive yet balanced.`;
@@ -164,20 +269,20 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
     window.dispatchEvent(new Event("ai-content-generated"));
     
     // 4. Show Completion Message (No Confirmation Needed per request)
-    setMessages((prev) => {
-       const filtered = prev.filter(m => m.id !== thinkingMsgId);
-       return [...filtered, {
-          id: generateId(),
-          role: "assistant",
-          content: "✅ Content has been added to your document."
-       }];
+    // Remove thinking message and show simple text
+    newMessages = newMessages.filter(m => m.id !== thinkingMsgId);
+    newMessages.push({
+       id: generateId(),
+       role: "assistant",
+       content: "✅ Content has been added to your document."
     });
+    onMessagesChange(newMessages);
   };
 
   const handleConfirm = (content: string) => {
      onInsertContent(content);
      // Add success message
-     setMessages(prev => [...prev, {
+     onMessagesChange([...messages, {
         id: generateId(),
         role: "assistant",
         content: "✅ Content added to document."
@@ -286,27 +391,38 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
                    )}
 
                    {/* Confirmation Card */}
-                   {msg.type === "confirmation" && msg.cardData ? (
-                     <div className="w-full bg-[#2C2C3A] border border-white/10 rounded-xl p-4 shadow-lg ring-1 ring-green-500/20">
-                         <div className="flex items-center justify-between mb-3 pb-2 border-b border-white/5">
-                           <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                             <CheckCircle2 className="w-4 h-4 text-green-400" /> Review Content
+                   {(msg.type === "confirmation" || msg.type === "quote") && msg.cardData ? (
+                     <div className={cn(
+                        "w-full border rounded-xl p-4 shadow-lg",
+                        msg.type === "quote" ? "bg-white text-black border-gray-200" : "bg-[#2C2C3A] border-white/10 ring-1 ring-green-500/20"
+                     )}>
+                         <div className={cn("flex items-center justify-between mb-2 pb-2 border-b", msg.type === "quote" ? "border-gray-100" : "border-white/5")}>
+                           <h4 className={cn("text-sm font-bold flex items-center gap-2", msg.type === "quote" ? "text-gray-800" : "text-white")}>
+                             {msg.type === "quote" ? <Quote className="w-4 h-4 text-gray-400" /> : <CheckCircle2 className="w-4 h-4 text-green-400" />} 
+                             {msg.cardData.title}
                            </h4>
                          </div>
-                         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed font-serif bg-black/20 p-3 rounded-lg border border-white/5 max-h-60 overflow-y-auto custom-scrollbar">
+                         <div className={cn(
+                            "text-sm whitespace-pre-wrap leading-relaxed font-serif p-2 rounded-lg border",
+                            msg.type === "quote" ? "bg-gray-50 border-gray-100 text-gray-600 italic" : "bg-black/20 border-white/5 text-gray-300 max-h-60 overflow-y-auto custom-scrollbar"
+                         )}>
                            {msg.cardData.content}
                          </div>
-                         <div className="mt-3 flex gap-2">
-                           <button 
-                             onClick={() => handleConfirm(msg.cardData!.content)}
-                             className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg"
-                           >
-                               Confirm & Insert
-                           </button>
-                           <button className="px-3 py-2 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white text-xs font-bold rounded-lg transition-all border border-white/5">
-                               Reject
-                           </button>
-                         </div>
+                         
+                         {/* Confirmation Buttons (Only for confirmation type) */}
+                         {msg.type === "confirmation" && (
+                           <div className="mt-3 flex gap-2">
+                             <button 
+                               onClick={() => handleConfirm(msg.cardData!.content)}
+                               className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg"
+                             >
+                                 Confirm & Insert
+                             </button>
+                             <button className="px-3 py-2 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white text-xs font-bold rounded-lg transition-all border border-white/5">
+                                 Reject
+                             </button>
+                           </div>
+                         )}
                      </div>
                    ) : (
                      <div className={cn(
@@ -333,7 +449,28 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent 
 
            {/* Input Area */}
            <div className="p-4 bg-[#17171A] border-t border-white/5">
-             <div className="relative bg-black/40 border border-white/10 rounded-2xl p-1 focus-within:border-green-500/50 transition-colors">
+             <div className={cn("relative bg-black/40 border border-white/10 rounded-2xl p-1 focus-within:border-green-500/50 transition-colors", pendingQuote ? "rounded-t-sm" : "")}>
+                 
+                 {/* Quote Preview */}
+                 {pendingQuote && (
+                    <div className="mx-2 mt-2 mb-1 p-3 bg-[#2C2C3A] rounded-xl border border-white/5 flex items-start gap-3 relative group">
+                       <div className="p-2 bg-white/5 rounded-lg">
+                          <Quote className="w-4 h-4 text-gray-400" />
+                       </div>
+                       <div className="flex-1 min-w-0">
+                          <div className="text-xs font-bold text-gray-300 mb-0.5">Selected text</div>
+                          <div className="text-xs text-gray-500 truncate">{pendingQuote}</div>
+                       </div>
+                       <button 
+                         onClick={() => setPendingQuote(null)}
+                         className="absolute top-1 right-1 p-1 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                       >
+                          <span className="sr-only">Remove quote</span>
+                          &times;
+                       </button>
+                    </div>
+                 )}
+
                  <textarea
                    value={inputMessage}
                    onChange={(e) => setInputMessage(e.target.value)}
