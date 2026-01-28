@@ -118,22 +118,8 @@ export default function WritingAgentPage() {
   };
 
   const handleStreamContent = (chunk: string) => {
-    // For streaming, we don't save history on every chunk, maybe only start? 
-    // Simplified: Just update. Real app would batch.
-    
-    // Check if we have an insertion point (from metadata hack or state)
-    // Since we don't have global state for cursor, we'll assume append for now unless we parse the chunk?
-    // Actually, `handleInsertContent` handles the logic. 
-    // Wait, `RightSidebar` calls `onStreamContent`.
-    
-    setDocuments(prev => prev.map(doc => 
-      doc.id === currentDocId ? { ...doc, content: doc.content + chunk } : doc
-    ));
-    
-    // Auto-scroll logic is handled in CenterEditor or here?
-    // CenterEditor's textarea has `overflow-y-auto`. We need to scroll IT.
-    // We can dispatch an event "content-scroll"
-    window.dispatchEvent(new Event("content-scroll-bottom"));
+    // Dispatch event for CenterEditor to handle DOM updates directly
+    window.dispatchEvent(new CustomEvent("ai-stream-chunk", { detail: { chunk } }));
   };
   
   const handleDeleteDocument = () => {
@@ -148,10 +134,10 @@ export default function WritingAgentPage() {
      }
   };
 
-  const handleAIRequest = (prompt?: string) => {
+  const handleAIRequest = (prompt?: string, mode?: string) => {
     setIsRightSidebarOpen(true);
     if (prompt) {
-       const event = new CustomEvent("ai-prompt-request", { detail: { prompt } });
+       const event = new CustomEvent("ai-prompt-request", { detail: { prompt, mode } });
        window.dispatchEvent(event);
     }
   };
@@ -181,6 +167,7 @@ export default function WritingAgentPage() {
 
         {/* 2. Center Stage: Editor */}
         <CenterEditor 
+          key={currentDocId} // Force remount on doc change to clear state
           content={currentDoc?.content || ""} 
           onChange={handleUpdateContent}
           onAIRequest={handleAIRequest}

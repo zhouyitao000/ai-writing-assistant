@@ -70,12 +70,11 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent,
   useEffect(() => {
     const handleExternalPrompt = (e: any) => {
       const prompt = e.detail?.prompt;
+      const mode = e.detail?.mode;
       if (prompt) {
         if (step === "config") setStep("chat");
         // Trigger direct generation flow using ref to get latest messages
-        // We define the logic here or call a stable handler. 
-        // To be safe, let's inline the logic or use a ref-based handler to ensure we access latest props/state.
-        executeDirectGeneration(prompt);
+        executeDirectGeneration(prompt, mode);
       }
     };
     window.addEventListener("ai-prompt-request", handleExternalPrompt);
@@ -83,7 +82,7 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent,
   }, [step, persona, tone]); // Add persona/tone so we get their latest values
 
   // Core Generation Logic (Ref-safe)
-  const executeDirectGeneration = async (prompt: string) => {
+  const executeDirectGeneration = async (prompt: string, mode?: string) => {
      // 1. Add User Prompt
      const userMsg: Message = {
         id: generateId(),
@@ -107,12 +106,18 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent,
      callbacksRef.current.onMessagesChange(newMessages);
 
      // 3. Stream content to Editor (Virtual)
-     const fullText = `[Direct Generation for "${prompt}"]\n\nThis content is being streamed directly to your document editor. It reflects the ${persona} persona and ${tone} tone you selected.`;
+     let fullText = "";
+     if (mode === 'replace' || mode === 'insert') {
+        fullText = `This content is being streamed directly. It reflects the ${persona} persona and ${tone} tone you selected.`;
+     } else {
+        fullText = `\n\n[Direct Generation for "${prompt}"]\n\nThis content is being streamed directly to your document editor. It reflects the ${persona} persona and ${tone} tone you selected.`;
+     }
+     
      const chunks = fullText.split(" ");
      
      for (let i = 0; i < chunks.length; i++) {
         await new Promise(r => setTimeout(r, 50));
-        callbacksRef.current.onStreamContent?.((i === 0 ? "\n\n" : " ") + chunks[i]);
+        callbacksRef.current.onStreamContent?.((i === 0 && (mode === 'replace' || mode === 'insert') ? "" : i === 0 ? "" : " ") + chunks[i]);
      }
 
      setIsStreaming(false);
@@ -242,6 +247,9 @@ export default function RightSidebar({ onInsertContent, isOpen, onStreamContent,
     setInputMessage("");
     setPendingQuote(null); // Clear quote
     setIsStreaming(true);
+
+    // Dispatch event to set mode to 'append' for chat interactions
+    window.dispatchEvent(new CustomEvent("ai-stream-start", { detail: { mode: 'append' } }));
 
     // 2. Direct Streaming to Editor (Skip Chat Card)
     // Add "Generating..." indicator in chat
